@@ -1,36 +1,52 @@
 package com.example.media_compress
 
 import android.content.Context
-import android.net.Uri
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaExtractor
+import android.media.MediaFormat
+import android.media.MediaMuxer
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
-import com.otaliastudios.transcoder.Transcoder
-import com.otaliastudios.transcoder.TranscoderListener
-import com.otaliastudios.transcoder.resize.AtMostResizer
-import com.otaliastudios.transcoder.resize.FractionResizer
-import com.otaliastudios.transcoder.resize.MultiResizer
-import com.otaliastudios.transcoder.resize.Resizer
-import com.otaliastudios.transcoder.source.TrimDataSource
-import com.otaliastudios.transcoder.source.UriDataSource
-import com.otaliastudios.transcoder.strategy.DefaultAudioStrategy
-import com.otaliastudios.transcoder.strategy.DefaultVideoStrategy
-import com.otaliastudios.transcoder.strategy.TrackStrategy
+import android.view.Surface
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.FrameDropEffect
+import androidx.media3.effect.Presentation
+import androidx.media3.effect.ScaleAndRotateTransformation
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.DefaultEncoderFactory
+import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.Effects
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.ProgressHolder
+import androidx.media3.transformer.Transformer
+import androidx.media3.transformer.VideoEncoderSettings
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import java.io.File
+import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.*
-import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.cancellation.CancellationException
+
+const val channelName = "media_compress"
+const val tag = "MediaCompressPlugin"
+val utility = Utility(channelName)
 
 /** MediaCompressPlugin */
+@UnstableApi
 class MediaCompressPlugin : FlutterPlugin, MethodCallHandler {
     private var _context: Context? = null
     private lateinit var _channel: MethodChannel
-    private val tag = "MediaCompressPlugin"
-    private var transcodeFuture:Future<Void>? = null
-    var channelName = "media_compress"
+    private var transformer: Transformer? = null
 
     override fun onMethodCall(
         call: MethodCall,
@@ -53,13 +69,15 @@ class MediaCompressPlugin : FlutterPlugin, MethodCallHandler {
             }
             "getMediaInfo" -> {
                 val path = call.argument<String>("path")
-                result.success(Utility(channelName).getMediaInfoJson(context, path!!).toString())
+                val res = utility.getMediaInfoJson(context, path!!).toString()
+                result.success(res)
             }
             "deleteAllCache" -> {
-                result.success(Utility(channelName).deleteAllCache(context, result))
+                utility.deleteAllCache(context, result)
             }
             "cancelCompression" -> {
-                transcodeFuture?.cancel(true)
+                transformer?.cancel()
+//                VideoCompressor.cancel()
                 result.success(false)
             }
             "compress" -> {
@@ -82,91 +100,139 @@ class MediaCompressPlugin : FlutterPlugin, MethodCallHandler {
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        transformer?.cancel()
+        transformer = null
         _channel.setMethodCallHandler(null)
     }
 
-    private fun resize(atMost: Int): MultiResizer {
-        // First scales down, then ensures size is at most `atMost`. Order matters!
-        val resizer = MultiResizer()
-        resizer.addResizer(FractionResizer(0.5F))
-        resizer.addResizer(AtMostResizer(atMost))
-
-        return resizer
+    private fun compress (context: Context, path: String, quality: Int, duration: Int?, frameRate: Int, result: MethodChannel.Result) {
+         media3Compress(context, path, quality, duration, frameRate, result)
     }
 
-    private fun compress (context: Context, path: String, quality: Int, duration: Int?, frameRate: Int, result: MethodChannel.Result) {
-        val tempDir: String = context.getExternalFilesDir("media_compress")!!.absolutePath
-        val out = SimpleDateFormat("yyyy-MM-dd hh-mm-ss", Locale.US).format(Date())
-        val destPath: String = tempDir + File.separator + "VID_" + out + path.hashCode() + ".mp4"
-        val utility = Utility(channelName)
+    private fun media3Compress (context: Context, path: String, quality: Int, duration: Int?, frameRate: Int, result: MethodChannel.Result) {
+        Log.d("TAG-Compress", "`media3` Take place")
+        try {
+            val tempDir: String = context.getExternalFilesDir("media_compress")!!.absolutePath
+            val out = SimpleDateFormat("yyyy-MM-dd hh-mm-ss", Locale.US).format(Date())
+            val destPath: String = tempDir + File.separator + "VID_" + out + path.hashCode() + ".mp4"
+            val originInfo = utility.getVideoData(context, path)
 
-        var videoTrackStrategy: TrackStrategy = DefaultVideoStrategy.atMost(340).build()
-        val audioTrackStrategy: TrackStrategy
+            var bitrate = originInfo.bitrate
+            var videoSize = 480
 
-        when (quality) {
-            0 -> {
-                val resizer = resize(480)
-                videoTrackStrategy = DefaultVideoStrategy.Builder(resizer)
-                    .frameRate(frameRate)
+            when (quality) {
+                0 -> { // Low
+                    bitrate = 1_000_000 // 1 Mbps
+                    videoSize = 480
+                }
+                1 -> { // Medium
+                    bitrate = if (bitrate < 1_500_000) bitrate else 1_500_000 // 1.5 Mbps
+                    videoSize = 540
+                }
+                2 -> { // High
+                    bitrate = if (bitrate < 2_500_000) bitrate else 2_500_000 // 2.5 Mbps
+                    videoSize = 720
+                }
+                3 -> { // Very High
+                    bitrate = if (bitrate < 3_500_000) bitrate else 3_500_000 // 3.5 Mbps
+                    videoSize = 1080
+                }
+            }
+
+            Log.d("TAG-bitrate", bitrate.toString())
+
+            // Create a MediaItem from the source path
+            val mediaItemBuilder = MediaItem.Builder().setUri(path)
+
+            // 1. Apply trimming if a duration is provided
+            if (duration != null && duration > 0) {
+                // Trim the video from the start to the specified duration in microseconds.
+                val endPositionMs = duration * 1000L
+                val clippingConfiguration = MediaItem.ClippingConfiguration.Builder()
+                    .setStartPositionMs(0)
+                    .setEndPositionMs(endPositionMs)
                     .build()
-                // videoTrackStrategy = DefaultVideoStrategy.atMost(480, 640).build()
+                mediaItemBuilder.setClippingConfiguration(clippingConfiguration)
             }
-            1 -> {
-                val resizer = resize(720)
-                videoTrackStrategy = DefaultVideoStrategy.Builder(resizer).frameRate(frameRate).build()
-                // videoTrackStrategy = DefaultVideoStrategy.atMost(720, 1280).build()
+
+            val mediaItem = mediaItemBuilder.build()
+
+            val videoEffects = listOf(
+                FrameDropEffect.createDefaultFrameDropEffect(frameRate.toFloat()),
+                Presentation.createForShortSide(videoSize),
+                ScaleAndRotateTransformation.Builder().setRotationDegrees(0f).build(), // No rotation
+            )
+
+            val editedMediaItem = EditedMediaItem.Builder(mediaItem)
+                .setEffects(Effects(listOf(), videoEffects))
+                .build()
+
+            val videoEncoderSettings = VideoEncoderSettings.Builder()
+                .setBitrate(bitrate.toInt())
+                .build()
+
+            val encoderFactory = DefaultEncoderFactory.Builder(context)
+                .setRequestedVideoEncoderSettings(videoEncoderSettings)
+
+            // Handler for progress updates
+            val mainHandler = Handler(Looper.getMainLooper())
+            lateinit var progressChecker: Runnable
+
+            transformer = Transformer.Builder(context)
+                .setVideoMimeType(MimeTypes.VIDEO_H264)
+                .setEncoderFactory(encoderFactory.build())
+                .addListener(object : Transformer.Listener {
+                    override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                        mainHandler.removeCallbacks(progressChecker)
+                        _channel.invokeMethod("updateProgress", 100.00)
+                        val json = utility.getMediaInfoJson(context, destPath)
+                        json.put("isCancel", false)
+                        result.success(json.toString())
+                    }
+
+                    override fun onError(
+                        composition: Composition,
+                        exportResult: ExportResult,
+                        exportException: ExportException
+                    ) {
+                        mainHandler.removeCallbacks(progressChecker)
+                        if (exportException.errorCodeName == "ERROR_CANCELLED") {
+                            val json = utility.getMediaInfoJson(context, destPath)
+                            json.put("isCancel", true)
+                            result.success(json.toString()) // Or result.success(null) if you prefer
+                        } else {
+                            result.error("Transformer_Failed", exportException.message, exportException.cause)
+                        }
+                    }
+
+                })
+                .build()
+
+            // Create the Runnable to check for progress
+            val progressHolder = ProgressHolder()
+            progressChecker = object : Runnable {
+                override fun run() {
+                    if (transformer != null) {
+                        when (transformer?.getProgress(progressHolder)) {
+                            Transformer.PROGRESS_STATE_AVAILABLE -> {
+                                _channel.invokeMethod("updateProgress", progressHolder.progress.toDouble())
+                            }
+                        }
+                        mainHandler.postDelayed(this, 1)
+                    }
+                    else {
+                        mainHandler.removeCallbacks(this)
+                    }
+
+                }
             }
-            2 -> {
-                val resizer = resize(1080)
-                videoTrackStrategy = DefaultVideoStrategy.Builder(resizer).frameRate(frameRate).build()
-                // videoTrackStrategy = DefaultVideoStrategy.atMost(1080, 1920).build()
-            }
+            // Start transformation and progress polling
+            mainHandler.post(progressChecker)
+            transformer?.start(editedMediaItem, destPath)
         }
-
-        val sampleRate = DefaultAudioStrategy.SAMPLE_RATE_AS_INPUT
-        val channels = DefaultAudioStrategy.CHANNELS_AS_INPUT
-        audioTrackStrategy = DefaultAudioStrategy.builder()
-            .channels(channels)
-            .sampleRate(sampleRate)
-            .build()
-
-        val dataSource = if (duration != null) {
-            val source = UriDataSource(context, Uri.parse(path))
-            val totalDuration = utility.durationUs(context, path)
-            val trimEnd = (1000 * 1000 * duration).toLong()
-
-            val trimEndUs = if (trimEnd < totalDuration) {
-                totalDuration-trimEnd
-            } else {
-                0
-            }
-
-            TrimDataSource(source, 0, trimEndUs)
-        } else {
-            UriDataSource(context, Uri.parse(path))
+        catch (e: Exception) {
+            result.error("Transformer_Failed", e.message, e.cause)
         }
-
-        transcodeFuture = Transcoder.into(destPath)
-            .addDataSource(dataSource)
-            .setAudioTrackStrategy(audioTrackStrategy)
-            .setVideoTrackStrategy(videoTrackStrategy)
-            .setListener(object : TranscoderListener {
-                override fun onTranscodeProgress(progress: Double) {
-                    _channel.invokeMethod("updateProgress", progress * 100.00)
-                }
-                override fun onTranscodeCompleted(successCode: Int) {
-                    _channel.invokeMethod("updateProgress", 100.00)
-                    val json = utility.getMediaInfoJson(context, destPath)
-                    json.put("isCancel", false)
-                    result.success(json.toString())
-                }
-                override fun onTranscodeCanceled() {
-                    result.success(null)
-                }
-                override fun onTranscodeFailed(exception: Throwable) {
-                    result.error("TRANSCODE_FAILED", exception.message, null)
-                }
-            }).transcode()
     }
 
     private fun init(context: Context, messenger: BinaryMessenger) {
