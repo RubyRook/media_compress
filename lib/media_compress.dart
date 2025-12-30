@@ -8,11 +8,34 @@ export 'package:media_compress/media_info.dart';
 
 enum Quality {
   /// Resolution 640x480 Quality
-  x480p,
+  x480p('480P', 480),
+  /// Resolution 960x540 Quality
+  x540p('540P', 540),
   /// Resolution 1280x720 Quality
-  x720p,
+  x720p('720P', 720),
   /// Resolution 1920x1080 Quality
-  x1080p;
+  x1080p('1080P', 1080);
+
+  final String title;
+  final int value;
+  const Quality(this.title, this.value);
+
+  static Quality fromSide(num side) {
+    if (side >= x1080p.value) {
+      return x1080p;
+    }
+    else if (side >= x720p.value) {
+      return x720p;
+    }
+    else if (side >= x540p.value) {
+      return x540p;
+    }
+    else if (side >= x480p.value) {
+      return x480p;
+    }
+
+    return x1080p;
+  }
 }
 
 mixin _CompressMixin {
@@ -120,5 +143,18 @@ class MediaCompress with _CompressMixin {
       debugPrint('Error from MediaCompress: Method: $name $e');
     }
     return result;
+  }
+
+  Quality qualityGen(num n) {
+    Quality? result;
+    for (final quality in Quality.values) {
+      if (n > quality.value) {
+        continue;
+      }
+
+      result = quality;
+    }
+
+    return result ?? Quality.x1080p;
   }
 }
