@@ -2,12 +2,28 @@ package com.example.media_compress
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.net.Uri
-import android.os.Build
+import android.util.Log
 import io.flutter.plugin.common.MethodChannel
 import org.json.JSONObject
 import java.io.File
+import kotlin.math.max
+import kotlin.math.roundToInt
+
+data class VideoSize(val width: Int, val height: Int) {
+    fun shortestSide (): Int {
+        return if (width < height) width else height
+    }
+
+    fun isLandscape (): Boolean {
+        return width > height
+    }
+}
+
+data class VideoData(val size: VideoSize, val bitrate: Long, val duration: Long)
 
 class Utility(private val channelName: String) {
 
@@ -19,51 +35,110 @@ class Utility(private val channelName: String) {
         }
     }
 
-    /*fun timeStrToTimestamp(time: String): Long {
-        val timeArr = time.split(":")
-        val hour = Integer.parseInt(timeArr[0])
-        val min = Integer.parseInt(timeArr[1])
-        val secArr = timeArr[2].split(".")
-        val sec = Integer.parseInt(secArr[0])
-        val mSec = Integer.parseInt(secArr[1])
-
-        val timeStamp = (hour * 3600 + min * 60 + sec) * 1000 + mSec
-        return timeStamp.toLong()
-    }*/
-
-    /// get duration of video as microseconds
-    fun durationUs(context: Context, path: String): Long {
+    fun durationMillis(context: Context, path: String): Long {
         val file = File(path)
         val retriever = MediaMetadataRetriever()
-        retriever.setDataSource(context, Uri.fromFile(file))
 
+        retriever.setDataSource(context, Uri.fromFile(file))
         val durationString = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-        val durationMillis = java.lang.Long.parseLong(durationString)
 
         retriever.release()
-        return durationMillis * 1000 // Convert to microseconds
+        return durationString?.toLongOrNull() ?: 0L
+    }
+
+    fun getVideoData(context: Context, path: String): VideoData {
+        val file = File(path)
+        val retriever = MediaMetadataRetriever()
+
+        retriever.setDataSource(context, Uri.fromFile(file))
+
+        val width = retriever
+            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+
+        val height = retriever
+            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+
+        val bitrate = retriever
+            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toLongOrNull() ?: 1_000_000L
+
+        val duration = retriever
+            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+
+        retriever.release()
+        return VideoData(VideoSize(width, height), bitrate, duration)
+    }
+
+    fun getVideoFrameRate(context: Context, videoUri: Uri): Float? {
+        var frameRate: Float? = null
+        var mediaExtractor: MediaExtractor? = null
+        try {
+            mediaExtractor = MediaExtractor()
+            mediaExtractor.setDataSource(context, videoUri, null)
+
+            for (i in 0 until mediaExtractor.trackCount) {
+                val format = mediaExtractor.getTrackFormat(i)
+                val mime = format.getString(MediaFormat.KEY_MIME)
+                if (mime?.startsWith("video/") == true) {
+                    // Found the video track
+                    if (format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
+                        frameRate = format.getInteger(MediaFormat.KEY_FRAME_RATE).toFloat()
+                        Log.d("VideoUtils", "Frame rate from format: $frameRate fps")
+                    } else {
+                        // If KEY_FRAME_RATE is not available, you might have to estimate it
+                        // by checking the sample time of the first few frames,
+                        // though this is less accurate and assumes a stable frame rate.
+                        Log.d("VideoUtils", "KEY_FRAME_RATE not found, trying estimation (less reliable).")
+                        // The snippet from search results suggests a basic estimation:
+                        // mediaExtractor.advance()
+                        // val fpsEstimate = 1000000f / mediaExtractor.sampleTime.toFloat()
+                        // frameRate = fpsEstimate
+                    }
+                    break // Found the video track, no need to check other tracks
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("VideoUtils", "Error extracting frame rate", e)
+        } finally {
+            mediaExtractor?.release()
+        }
+        return frameRate
     }
 
     fun getMediaInfoJson(context: Context, path: String): JSONObject {
-        val file = File(path)
+        // Use native MediaMetadataRetriever for basic info that is usually reliable
         val retriever = MediaMetadataRetriever()
+        var widthStr: String? = null
+        var heightStr: String? = null
+        var orientation: String? = null
+        var bitRatesStr: String? = null
+        var title: String? = null
+        var author: String? = null
+        var duration: String? = null
 
-        retriever.setDataSource(context, Uri.fromFile(file))
+        try {
+            retriever.setDataSource(context, Uri.fromFile(File(path)))
+            widthStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+            heightStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+            orientation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+            bitRatesStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
+            title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
+            author = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_AUTHOR)
+            duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+        }
+        catch (e: Exception) {
+            Log.e("VideoUtils", "Error extracting media info", e)
+        }
+        finally {
+            retriever.release()
+        }
 
-        val bitRatesStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
-        val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-        val title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE) ?: file.name
-        val author = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_AUTHOR) ?: ""
-        val widthStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
-        val heightStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
-        val orientation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
-
-        val bitRates = if (bitRatesStr == null) 0 else java.lang.Long.parseLong(bitRatesStr)
-        val duration = java.lang.Long.parseLong(durationStr)
-        var width = java.lang.Long.parseLong(widthStr)
-        var height = java.lang.Long.parseLong(heightStr)
+        val file = File(path)
+        val bitRates = bitRatesStr?.toLongOrNull() ?: 0L
+        var width = widthStr?.toLongOrNull() ?: 0L
+        var height = heightStr?.toLongOrNull() ?: 0L
         val filesize = file.length()
         val ori = orientation?.toIntOrNull()
+        val frameRate = getVideoFrameRate(context, Uri.fromFile(File(path))) ?: 0L
 
         if (ori != null && isLandscapeImage(ori)) {
             val tmp = width
@@ -71,18 +146,18 @@ class Utility(private val channelName: String) {
             height = tmp
         }
 
-        retriever.release()
-
         val json = JSONObject()
 
         json.put("path", path)
-        json.put("title", title)
-        json.put("author", author)
+        json.put("title", title ?: file.name)
+        json.put("author", author ?: "")
         json.put("width", width)
         json.put("height", height)
-        json.put("duration", duration)
+        // Ensure parsing is safe in case of non-numeric values
+        json.put("duration", duration?.toFloatOrNull()?.toLong() ?: 0L)
         json.put("filesize", filesize)
         json.put("bitRates", bitRates)
+        json.put("frameRate", frameRate.toLong())
         if (ori != null) {
             json.put("orientation", ori)
         }
@@ -97,49 +172,35 @@ class Utility(private val channelName: String) {
         try {
             retriever.setDataSource(path)
             bitmap = retriever.getFrameAtTime(position, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-        } catch (ex: IllegalArgumentException) {
-            result.error(channelName, "Assume this is a corrupt video file", null)
-        } catch (ex: RuntimeException) {
+        } catch (_: Exception) { // Catch all exceptions for safety
             result.error(channelName, "Assume this is a corrupt video file", null)
         } finally {
             try {
                 retriever.release()
-            } catch (ex: RuntimeException) {
-                result.error(channelName, "Ignore failures while cleaning up", null)
+            } catch (_: Exception) {
+                // It's not necessary to send an error for cleanup failures
             }
         }
 
-        if (bitmap == null) result.success(emptyArray<Int>())
+        // CRITICAL FIX: Check for null before using the bitmap
+        if (bitmap == null) {
+            result.success(null) // Let Flutter know there is no bitmap
+            // Return a dummy bitmap to prevent a crash if the caller isn't null-safe
+            return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
 
-        val width = bitmap!!.width
+        val width = bitmap.width
         val height = bitmap.height
-        val max = Math.max(width, height)
+        val max = max(width, height)
         if (max > 512) {
             val scale = 512f / max
-            val w = Math.round(scale * width)
-            val h = Math.round(scale * height)
+            val w = (scale * width).roundToInt()
+            val h = (scale * height).roundToInt()
             bitmap = Bitmap.createScaledBitmap(bitmap, w, h, true)
         }
 
         return bitmap
     }
-
-    /*fun getFileNameWithGifExtension(path: String): String {
-        val file = File(path)
-        var fileName = ""
-        val gifSuffix = "gif"
-        val dotGifSuffix = ".$gifSuffix"
-
-        if (file.exists()) {
-            val name = file.name
-            fileName = name.replaceAfterLast(".", gifSuffix)
-
-            if (!fileName.endsWith(dotGifSuffix)) {
-                fileName += dotGifSuffix
-            }
-        }
-        return fileName
-    }*/
 
     fun deleteAllCache(context: Context, result: MethodChannel.Result) {
         val dir = context.getExternalFilesDir("media_compress")
