@@ -6,7 +6,6 @@ public class MediaCompressPlugin: NSObject, FlutterPlugin {
   private let avController = AvController()
   private let channel: FlutterMethodChannel
   private let channelName = "media_compress"
-  private var exportSession: AVAssetExportSession? = nil
   private var stopCommand = false
 
   init(channel: FlutterMethodChannel) {
@@ -53,19 +52,6 @@ public class MediaCompressPlugin: NSObject, FlutterPlugin {
     }
   }
 
-  private func getExportPreset(_ quality: NSNumber)->String {
-    switch(quality) {
-    case 0:
-      return AVAssetExportPreset640x480
-    case 1:
-      return AVAssetExportPreset1280x720
-    case 2:
-      return AVAssetExportPreset1920x1080
-    default:
-      return AVAssetExportPreset640x480
-    }
-  }
-
   public func getMediaInfoJson(_ path: String)->[String : Any?] {
     let url = Utility.getPathUrl(path)
     let asset = avController.getVideoAsset(url)
@@ -78,10 +64,14 @@ public class MediaCompressPlugin: NSObject, FlutterPlugin {
 
     let title = avController.getMetaDataByTag(metadataAsset, key: "title")
     let author = avController.getMetaDataByTag(metadataAsset, key: "author")
-    let bitRates = getVideoBitrate(for: url)
+    let bitRates = track.estimatedDataRate
+    // Convert to Kilobits per second (Kbps) for easier reading
+    // let bitrateInKbps = bitRates / 1024.0
+    // print("Estimated video bitrate: \(bitrateInKbps) Kbps")
 
     let duration = asset.duration.seconds * 1000
     let filesize = track.totalSampleDataLength
+    let frameRate = track.nominalFrameRate
 
     let size = track.naturalSize.applying(track.preferredTransform)
 
@@ -89,128 +79,307 @@ public class MediaCompressPlugin: NSObject, FlutterPlugin {
     let height = abs(size.height)
 
     let dictionary = [
-      "path":Utility.excludeFileProtocol(path),
-      "title":title,
-      "author":author,
-      "width":width,
-      "height":height,
-      "duration":duration,
-      "filesize":filesize,
-      "orientation":orientation,
-      "bitRates":bitRates
+      "path": Utility.excludeFileProtocol(path), // not nil
+      "title": title, // not nil (empty string)
+      "author": author, // not nil (empty string)
+      "width": width, // not nil
+      "height": height, // not nil
+      "duration": duration, // not nil
+      "filesize": filesize, // not nil
+      "orientation": orientation,
+      "bitRates": bitRates,
+      "frameRate": frameRate // not nil
     ] as [String : Any?]
     return dictionary
   }
 
-  public func getVideoBitrate(for videoURL: URL) -> Float? {
-    let asset = AVAsset(url: videoURL)
-    // Find the first video track in the asset
-    guard let videoTrack = asset.tracks(withMediaType: .video).first else {
-      print("No video track found")
-      return nil
+  private func getOutputSize(from originalSize: CGSize, for quality: NSNumber) -> CGSize {
+    let videoQuality = quality.intValue
+    var resolution: CGSize
+
+    switch videoQuality {
+      case 0:
+        resolution = CGSize(width: 640, height: 480)
+      case 1:
+        resolution = CGSize(width: 960, height: 540)
+      case 2:
+        resolution = CGSize(width: 1280, height: 720)
+      case 3:
+        resolution = CGSize(width: 1920, height: 1080)
+      default:
+        resolution = CGSize(width: 640, height: 480)
     }
 
-    // Use estimatedDataRate for a general bitrate estimate
-    let estimatedBitrate = videoTrack.estimatedDataRate // Measured in bits per second (bps)
-
-    if estimatedBitrate > 0 {
-      // Convert to Kilobits per second (Kbps) for easier reading
-      let bitrateInKbps = estimatedBitrate / 1024.0
-      print("Estimated video bitrate: \(bitrateInKbps) Kbps")
-      return estimatedBitrate
-    } else {
-      // Fallback for cases where estimatedDataRate is not available,
-      // you can calculate it manually if necessary (though less accurate).
-      // A manual calculation involves file size and duration, see more details on Stack Overflow.
-      print("Estimated data rate not available, attempting manual calculation (less reliable)...")
-      do {
-        let attributes = try FileManager.default.attributesOfItem(atPath: videoURL.path)
-        if let fileSize = attributes[FileAttributeKey.size] as? UInt64 {
-          let duration = CMTimeGetSeconds(asset.duration)
-          if duration > 0 {
-            // Calculate total bits (file size in bytes * 8 bits/byte)
-            let totalBits = Double(fileSize) * 8.0
-            // Bitrate = total bits / duration in seconds
-            let bitrate = totalBits / duration
-            let bitrateInKbps = bitrate / 1024.0
-            print("Calculated video bitrate: \(bitrateInKbps) Kbps")
-            return Float(bitrate)
-          }
-        }
-      } catch {
-        print("Error calculating file size: \(error)")
-      }
+    // Portrait
+    if originalSize.height > originalSize.width {
+      let aspect = originalSize.height / originalSize.width
+      let height = resolution.width // In portrait: quality size width become height
+      let width = height / aspect
+      return CGSize(width: width, height: height)
     }
-
-    return nil
+    // Landscape
+    else {
+      let aspect = originalSize.width / originalSize.height
+      let width = resolution.height * aspect
+      return CGSize(width: width, height: resolution.height)
+    }
   }
-
-
 
   public func compress(_ path: String, _ quality: NSNumber, _ duration: Double?, _ frameRate: Int?, _ result: @escaping FlutterResult) {
     let sourceVideoUrl = Utility.getPathUrl(path)
-    let sourceVideoType = "mp4"
+    let sourceVideoAsset = AVAsset(url: sourceVideoUrl)
 
-    let sourceVideoAsset = avController.getVideoAsset(sourceVideoUrl)
-    let sourceVideoTrack = avController.getTrack(sourceVideoAsset)
-
-    let uuid = NSUUID()
-    let compressionUrl = Utility
-      .getPathUrl("\(Utility.basePath())/\(Utility.getFileName(path))\(uuid.uuidString).\(sourceVideoType)")
-
-    let timescale = sourceVideoAsset.duration.timescale
-    let videoDuration = sourceVideoAsset.duration.seconds
-
-
-    let trim = Double(duration ?? videoDuration)
-    let timeRange = CMTimeRange(start: .zero, duration: CMTime(seconds: trim, preferredTimescale: timescale))
-
-    let session = sourceVideoTrack!.asset!
-    let exportSession = AVAssetExportSession(asset: session, presetName: getExportPreset(quality))!
-
-    exportSession.outputFileType = .mp4
-    exportSession.outputURL = compressionUrl
-    exportSession.shouldOptimizeForNetworkUse = true
-    exportSession.timeRange = timeRange
-
-    if frameRate != nil {
-      let videoComposition = AVMutableVideoComposition(propertiesOf: sourceVideoAsset)
-      videoComposition.frameDuration = CMTimeMake(value: 1, timescale: Int32(frameRate!))
-      exportSession.videoComposition = videoComposition
+    // 1. Get Video and Audio Tracks
+    guard let sourceVideoTrack = sourceVideoAsset.tracks(withMediaType: .video).first else {
+      result(FlutterError(code: "NO_VIDEO_TRACK", message: "No video track found in the source asset", details: nil))
+      return
     }
 
-    Utility.deleteFile(compressionUrl.absoluteString)
+    // Get the audio track, if it exists. It's not an error if it doesn't.
+    let sourceAudioTrack = sourceVideoAsset.tracks(withMediaType: .audio).first
 
-    let timer = Timer.scheduledTimer(
-      timeInterval: 0.1,
-      target: self,
-      selector: #selector(self.updateProgress),
-      userInfo: exportSession,
-      repeats: true
-    )
+    // 2. Setup Asset Reader
+    guard let reader = try? AVAssetReader(asset: sourceVideoAsset) else {
+      result(FlutterError(code: "READER_ERROR", message: "Unable to initialize asset reader", details: nil))
+      return
+    }
 
-    exportSession.exportAsynchronously(completionHandler: {
-      timer.invalidate()
+    let uuid = NSUUID()
+    let compressionUrl = Utility.getPathUrl("\(Utility.basePath())/\(Utility.getFileName(path))-\(uuid.uuidString).mp4")
+    try? FileManager.default.removeItem(at: compressionUrl)
 
-      if (self.stopCommand) {
-        self.stopCommand = false
+    // 3. Setup Asset Writer
+    guard let writer = try? AVAssetWriter(outputURL: compressionUrl, fileType: .mp4) else {
+      result(FlutterError(code: "WRITER_ERROR", message: "Unable to initialize asset writer", details: nil))
+      return
+    }
+
+    // 4. Configure Video Writer Input
+    var estimatedDataRate = Int(sourceVideoTrack.estimatedDataRate)
+    if estimatedDataRate == 0 { estimatedDataRate = 1_000_000 }
+
+    let outputSize = getOutputSize(from: sourceVideoTrack.naturalSize, for: quality)
+    let bitrate: Int
+
+    switch quality.intValue {
+      case 0: bitrate = 1_000_000 // 1 Mbps
+      case 1: bitrate = estimatedDataRate < 1_800_000 ? estimatedDataRate: 1_800_000 // 1.8 Mbps
+      case 2: bitrate = estimatedDataRate < 2_500_000 ? estimatedDataRate: 2_500_000 // 2.5 Mbps
+      case 3: bitrate = estimatedDataRate < 5_000_000 ? estimatedDataRate: 5_000_000 // 5 Mbps
+      default: bitrate = 1_000_000
+    }
+
+    let videoOutputSettings: [String: Any] = [
+      AVVideoCodecKey: AVVideoCodecType.h264,
+      AVVideoWidthKey: outputSize.width,
+      AVVideoHeightKey: outputSize.height,
+      AVVideoCompressionPropertiesKey: [
+        AVVideoAverageBitRateKey: bitrate,
+        AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+      ],
+    ]
+
+    let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoOutputSettings, sourceFormatHint: sourceVideoTrack.formatDescriptions.first as! CMFormatDescription?)
+    videoInput.transform = sourceVideoTrack.preferredTransform
+
+    // 5. Configure Audio Writer Input (if audio track exists)
+    var audioInput: AVAssetWriterInput?
+    var audioSettings:[String: Any] = [:]
+    if sourceAudioTrack != nil {
+      audioSettings = [
+        AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+        AVSampleRateKey: 44100,
+        AVNumberOfChannelsKey: 2,
+        AVEncoderBitRateKey: 128000,
+      ]
+      let writerAudioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+      writerAudioInput.expectsMediaDataInRealTime = false
+      audioInput = writerAudioInput
+    }
+
+    // 6. Configure Reader Outputs
+    let readerVideoOutput = AVAssetReaderTrackOutput(track: sourceVideoTrack, outputSettings: [
+      kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+    ])
+
+    var readerAudioOutput: AVAssetReaderTrackOutput?
+    if let audioTrack = sourceAudioTrack {
+      // For audio, we read the samples in their original format.
+      readerAudioOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: [
+        AVFormatIDKey: kAudioFormatLinearPCM
+      ])
+    }
+
+    // 7. Attach Inputs and Outputs to Reader and Writer
+    if reader.canAdd(readerVideoOutput) { reader.add(readerVideoOutput) } else {
+      result(FlutterError(code: "READER_ERROR", message: "Cannot add video reader output", details: nil)); return
+    }
+    if writer.canAdd(videoInput) { writer.add(videoInput) } else {
+      result(FlutterError(code: "WRITER_ERROR", message: "Cannot add video writer input", details: nil)); return
+    }
+
+    if let audioOut = readerAudioOutput, let audioIn = audioInput {
+      if reader.canAdd(audioOut) { reader.add(audioOut) } else {
+        result(FlutterError(code: "READER_ERROR", message: "Cannot add audio reader output", details: nil)); return
+      }
+      if writer.canAdd(audioIn) { writer.add(audioIn) } else {
+        result(FlutterError(code: "WRITER_ERROR", message: "Cannot add audio writer input", details: nil)); return
+      }
+    }
+
+    // Configure time range for trimming
+    let videoDuration = sourceVideoAsset.duration.seconds
+    var trim = videoDuration
+    if let requestedDuration = duration, requestedDuration < videoDuration {
+      trim = requestedDuration
+    }
+    if trim > 0 {
+      reader.timeRange = CMTimeRange(start: .zero, duration: CMTime(seconds: trim, preferredTimescale: sourceVideoAsset.duration.timescale))
+    }
+
+
+    // 8. Start Writing/Reading Session
+    writer.startWriting()
+    reader.startReading()
+    writer.startSession(atSourceTime: .zero)
+
+    // 9. Process Media Data Concurrently
+    let processingQueue = DispatchQueue(label: "media-compression-queue", qos: .userInitiated)
+    let dispatchGroup = DispatchGroup()
+
+    var lastAppendedFrameTime = CMTime.zero
+    let targetFrameRate = frameRate != nil ? Int32(frameRate!) : 0
+    let frameDuration = targetFrameRate > 0 ? CMTime(value: 1, timescale: targetFrameRate) : .invalid
+
+    // --- Process Video Track ---
+    dispatchGroup.enter()
+    videoInput.requestMediaDataWhenReady(on: processingQueue) { [weak self] in
+      guard let self = self else { return }
+      while videoInput.isReadyForMoreMediaData {
+        if self.stopCommand {
+          reader.cancelReading()
+          videoInput.markAsFinished()
+          dispatchGroup.leave()
+          print("Stop command received: Line \(#line)")
+          return
+        }
+
+        if let sampleBuffer = readerVideoOutput.copyNextSampleBuffer() {
+          let progress = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer)) / trim
+          DispatchQueue.main.async {
+            self.channel.invokeMethod("updateProgress", arguments: "\(progress * 100)")
+          }
+
+          var shouldAppend = true
+          if frameRate != nil {
+            let currentTimestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+
+            // If the current frame is PAST our target time, it's the one we should keep.
+            if currentTimestamp >= lastAppendedFrameTime {
+              shouldAppend = true
+              // We've appended a frame, so schedule the next append time.
+              lastAppendedFrameTime = CMTimeAdd(lastAppendedFrameTime, frameDuration)
+            } else {
+              // This frame arrived before our scheduled time. Drop it.
+              shouldAppend = false
+            }
+          }
+
+          if shouldAppend {
+            // Note: Appending the buffer fails if the writer isn't ready.
+            // Your original code handles this well.
+            if !videoInput.append(sampleBuffer) {
+              reader.cancelReading()
+              videoInput.markAsFinished()
+              dispatchGroup.leave()
+              result(FlutterError(
+                code: "APPEND_ERROR",
+                message: "Line \(#line): Unable to append video sample buffer",
+                details: "\(videoOutputSettings)"
+              ))
+              break
+            }
+          }
+        } else {
+          videoInput.markAsFinished()
+          dispatchGroup.leave()
+          break
+        }
+      }
+    }
+
+    // --- Process Audio Track (if exists) ---
+    if let writerAudioInput = audioInput, let trackAudioOutput = readerAudioOutput {
+      dispatchGroup.enter()
+      writerAudioInput.requestMediaDataWhenReady(on: processingQueue) { [weak self] in
+        guard let self = self else { return }
+        while writerAudioInput.isReadyForMoreMediaData {
+          if self.stopCommand {
+            // Video queue will cancel the reader, just finish this input.
+            writerAudioInput.markAsFinished()
+            dispatchGroup.leave()
+            return
+          }
+
+          if let sampleBuffer = trackAudioOutput.copyNextSampleBuffer() {
+            if !writerAudioInput.append(sampleBuffer) {
+              reader.cancelReading()
+              videoInput.markAsFinished()
+              dispatchGroup.leave()
+              result(FlutterError(
+                code: "APPEND_ERROR",
+                message: "Line \(#line): Unable to append audio sample buffer",
+                details: "\(audioSettings)"
+              ))
+              break
+            }
+          } else {
+            writerAudioInput.markAsFinished()
+            dispatchGroup.leave()
+            break
+          }
+        }
+      }
+    }
+
+    // 10. Finalize Writing
+    dispatchGroup.notify(queue: .main) { [weak self] in
+      guard let self = self else { return }
+      if self.stopCommand {
+        writer.cancelWriting()
+        self.stopCommand = false // Reset command
         var json = self.getMediaInfoJson(path)
         json["isCancel"] = true
-        let jsonString = Utility.keyValueToJson(json)
-        return result(jsonString)
+        result(Utility.keyValueToJson(json))
+        return
       }
 
-      var json = self.getMediaInfoJson(Utility.excludeEncoding(compressionUrl.path))
-      json["isCancel"] = false
-      let jsonString = Utility.keyValueToJson(json)
-      result(jsonString)
-    })
-    self.exportSession = exportSession
+      // Handle reader errors after processing
+      guard reader.status == .completed else {
+        writer.cancelWriting() // Important to prevent a corrupted file
+        if reader.status == .failed {
+          let errorMessage = reader.error?.localizedDescription ?? "Unknown reader error"
+          result(FlutterError(code: "COMPRESSION_FAILED", message: "Reader failed: \(errorMessage)", details: nil))
+        }
+        // If cancelled, the stopCommand block will handle the response.
+        return
+      }
+
+      writer.finishWriting {
+        if writer.status == .completed {
+          var json = self.getMediaInfoJson(Utility.excludeEncoding(compressionUrl.path))
+          json["isCancel"] = false
+          result(Utility.keyValueToJson(json))
+        } else {
+          let errorMessage = writer.error?.localizedDescription ?? "Unknown writer error"
+          result(FlutterError(code: "COMPRESSION_FAILED", message: "Writer failed: \(errorMessage)", details: writer.error?.localizedDescription))
+        }
+      }
+    }
   }
 
   private func cancelCompression(_ result: FlutterResult) {
     stopCommand = true
-    exportSession?.cancelExport()
     result("")
   }
 
@@ -242,13 +411,6 @@ public class MediaCompressPlugin: NSObject, FlutterPlugin {
     let json = getMediaInfoJson(path)
     let string = Utility.keyValueToJson(json)
     result(string)
-  }
-
-  @objc private func updateProgress(timer:Timer) {
-    let asset = timer.userInfo as! AVAssetExportSession
-    if (!stopCommand) {
-      channel.invokeMethod("updateProgress", arguments: "\(String(describing: asset.progress * 100))")
-    }
   }
 }
 
