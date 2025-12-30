@@ -1,49 +1,52 @@
 import 'dart:io';
+import 'dart:ui';
 
 class MediaInfo {
-  String? path;
-  String? title;
-  String? author;
-  int? width;
-  int? height;
+  final String path;
+  final String? title;
+  final String? author;
+  final int width;
+  final int height;
 
   /// [Android] API level 17
-  int? orientation;
+  final int? orientation;
 
   /// bytes
-  int? filesize; // filesize
+  final int filesize;
   /// milliseconds
-  double? duration;
-  bool? isCancel;
-  File? file;
-  num? bitRates;
+  final double duration;
+  final bool isCancel;
+  final num? bitRates;
+  final num frameRate;
 
   MediaInfo({
     required this.path,
     this.title,
     this.author,
-    this.width,
-    this.height,
+    required this.width,
+    required this.height,
     this.orientation,
-    this.filesize,
-    this.duration,
-    this.isCancel,
-    this.file,
+    required this.filesize,
+    required this.duration,
+    this.isCancel = false,
     this.bitRates,
+    required this.frameRate,
   });
 
-  MediaInfo.fromJson(Map<String, dynamic> json) {
-    path = json['path'];
-    title = json['title'];
-    author = json['author'];
-    width = json['width'];
-    height = json['height'];
-    orientation = json['orientation'];
-    filesize = json['filesize'];
-    duration = double.tryParse('${json['duration']}');
-    isCancel = json['isCancel'];
-    file = File(path!);
-    bitRates = json['bitRates'];
+  factory MediaInfo.fromJson(Map<String, dynamic> json) {
+    return MediaInfo(
+      path: json['path'],
+      title: json['title'],
+      author: json['author'],
+      width: json['width'],
+      height: json['height'],
+      orientation: json['orientation'],
+      filesize: json['filesize'],
+      duration: double.tryParse('${json['duration']}') ?? 0,
+      isCancel: json['isCancel'] ?? false,
+      bitRates: json['bitRates'],
+      frameRate: json['frameRate'],
+    );
   }
 
   Map<String, dynamic> toJson() {
@@ -58,11 +61,13 @@ class MediaInfo {
     }
     data['filesize'] = filesize;
     data['duration'] = duration;
-    if (isCancel != null) {
-      data['isCancel'] = isCancel;
-    }
-    data['file'] = File(path!).toString();
+    data['isCancel'] = isCancel;
     data['bitRates'] = bitRates;
+    data['frameRate'] = frameRate;
     return data;
   }
+
+  late final file = File(path);
+
+  late final dimension = Size(width.toDouble(), height.toDouble());
 }
