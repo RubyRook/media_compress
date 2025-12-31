@@ -23,7 +23,7 @@ public class MediaCompressPlugin: NSObject, FlutterPlugin {
 
     switch call.method {
     case "cancelCompression":
-      cancelCompression(result)
+      stopCommand = true
 
     case "compress":
       let path = args!["path"] as! String
@@ -126,6 +126,7 @@ public class MediaCompressPlugin: NSObject, FlutterPlugin {
   }
 
   public func compress(_ path: String, _ quality: NSNumber, _ duration: Double?, _ frameRate: Int?, _ result: @escaping FlutterResult) {
+    stopCommand = false
     let sourceVideoUrl = Utility.getPathUrl(path)
     let sourceVideoAsset = AVAsset(url: sourceVideoUrl)
 
@@ -347,10 +348,8 @@ public class MediaCompressPlugin: NSObject, FlutterPlugin {
       guard let self = self else { return }
       if self.stopCommand {
         writer.cancelWriting()
-        self.stopCommand = false // Reset command
-        var json = self.getMediaInfoJson(path)
-        json["isCancel"] = true
-        result(Utility.keyValueToJson(json))
+        self.stopCommand = false
+        result(FlutterError(code: "COMPRESSION_CANCELED", message: nil, details: nil))
         return
       }
 
@@ -368,7 +367,6 @@ public class MediaCompressPlugin: NSObject, FlutterPlugin {
       writer.finishWriting {
         if writer.status == .completed {
           var json = self.getMediaInfoJson(Utility.excludeEncoding(compressionUrl.path))
-          json["isCancel"] = false
           result(Utility.keyValueToJson(json))
         } else {
           let errorMessage = writer.error?.localizedDescription ?? "Unknown writer error"
@@ -376,11 +374,6 @@ public class MediaCompressPlugin: NSObject, FlutterPlugin {
         }
       }
     }
-  }
-
-  private func cancelCompression(_ result: FlutterResult) {
-    stopCommand = true
-    result("")
   }
 
   private func getByteThumbnail(_ path: String, _ quality: NSNumber, _ position: NSNumber, _ result: FlutterResult) {
