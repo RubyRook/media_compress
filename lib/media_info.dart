@@ -15,7 +15,6 @@ class MediaInfo {
   final int filesize;
   /// milliseconds
   final double duration;
-  final bool isCancel;
   final num? bitRates;
   final num frameRate;
 
@@ -28,7 +27,6 @@ class MediaInfo {
     this.orientation,
     required this.filesize,
     required this.duration,
-    this.isCancel = false,
     this.bitRates,
     required this.frameRate,
   });
@@ -43,7 +41,6 @@ class MediaInfo {
       orientation: json['orientation'],
       filesize: json['filesize'],
       duration: double.tryParse('${json['duration']}') ?? 0,
-      isCancel: json['isCancel'] ?? false,
       bitRates: json['bitRates'],
       frameRate: json['frameRate'],
     );
@@ -61,7 +58,6 @@ class MediaInfo {
     }
     data['filesize'] = filesize;
     data['duration'] = duration;
-    data['isCancel'] = isCancel;
     data['bitRates'] = bitRates;
     data['frameRate'] = frameRate;
     return data;
