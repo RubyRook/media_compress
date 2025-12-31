@@ -38,6 +38,23 @@ enum Quality {
   }
 }
 
+enum ErrorCode {
+  canceled("COMPRESSION_CANCELED"),
+  failed("COMPRESSION_FAILED");
+
+  final String code;
+  const ErrorCode(this.code);
+
+}
+
+enum MethodName {
+  compress,
+  cancelCompression,
+  getByteThumbnail,
+  getMediaInfo,
+  deleteAllCache,
+}
+
 mixin _CompressMixin {
   final compressProgress$ = ObservableBuilder<double>();
   final _channel = const MethodChannel('media_compress');
@@ -75,7 +92,7 @@ class MediaCompress with _CompressMixin {
   static final instance = MediaCompress._();
 
   Future<void> cancelCompression() async {
-    _invoke('cancelCompression');
+    _invoke(MethodName.cancelCompression);
   }
 
   Future<MediaInfo?> compress({
@@ -90,7 +107,7 @@ class MediaCompress with _CompressMixin {
     }
 
     setProcessingStatus(true);
-    final result = await _invoke<String>('compress', {
+    final result = await _invoke<String>(MethodName.compress, {
       'path': path,
       'quality': quality.index,
       'duration': duration,
@@ -113,7 +130,7 @@ class MediaCompress with _CompressMixin {
   async {
     assert(quality > 1 || quality < 100);
 
-    return await _invoke<Uint8List>('getByteThumbnail', {
+    return await _invoke<Uint8List>(MethodName.getByteThumbnail, {
       'path': path,
       'quality': quality,
       'position': position,
@@ -123,25 +140,31 @@ class MediaCompress with _CompressMixin {
   Future<MediaInfo> getMediaInfo(String path) async {
     // Not to set the result as strong-mode so that it would have exception to
     // lead to the failure of compression
-    final jsonStr = await (_invoke<String>('getMediaInfo', {'path': path}));
+    final jsonStr = await (_invoke<String>(MethodName.getMediaInfo, {'path': path}));
     final jsonMap = json.decode(jsonStr!);
     return MediaInfo.fromJson(jsonMap);
   }
 
   Future<bool?> deleteAllCache() async {
-    return await _invoke<bool>('deleteAllCache');
+    return await _invoke<bool>(MethodName.deleteAllCache);
   }
 
-  Future<T?> _invoke<T>(String name, [Map<String, dynamic>? params]) async {
+  Future<T?> _invoke<T>(MethodName name, [Map<String, dynamic>? params]) async {
     T? result;
     try {
       result = params != null
-          ? await channel.invokeMethod(name, params)
-          : await channel.invokeMethod(name);
+          ? await channel.invokeMethod(name.name, params)
+          : await channel.invokeMethod(name.name);
 
     } on PlatformException catch (e) {
-      debugPrint('Error from MediaCompress: Method: $name $e');
+      if (name == MethodName.compress) {
+        rethrow;
+      }
+      else {
+        debugPrint('Error from MediaCompress: Method: $name $e');
+      }
     }
+
     return result;
   }
 
