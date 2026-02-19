@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:media_compress/media_info.dart';
@@ -9,8 +10,6 @@ export 'package:media_compress/media_info.dart';
 enum Quality {
   /// Resolution 640x480 Quality
   x480p('480P', 480),
-  /// Resolution 960x540 Quality
-  x540p('540P', 540),
   /// Resolution 1280x720 Quality
   x720p('720P', 720),
   /// Resolution 1920x1080 Quality
@@ -26,9 +25,6 @@ enum Quality {
     }
     else if (side >= x720p.value) {
       return x720p;
-    }
-    else if (side >= x540p.value) {
-      return x540p;
     }
     else if (side >= x480p.value) {
       return x480p;
@@ -53,6 +49,11 @@ enum MethodName {
   getByteThumbnail,
   getMediaInfo,
   deleteAllCache,
+
+  // For android
+  fastTrims,
+  isHdrVideo,
+  isHdrEditingSupported,
 }
 
 mixin _CompressMixin {
@@ -121,6 +122,61 @@ class MediaCompress with _CompressMixin {
     else {
       return null;
     }
+  }
+
+  /// Android only
+  Future<MediaInfo?> fastTrims({
+    required String path,
+    int? duration,
+  })
+  async {
+    if (!Platform.isAndroid) return null;
+
+    if (isCompressing) {
+      throw StateError('Already have a compression process!');
+    }
+
+    setProcessingStatus(true);
+    final result = await _invoke<String>(MethodName.fastTrims, {
+      'path': path,
+      'duration': duration,
+    }).whenComplete(()=> setProcessingStatus(false));
+
+    if (result != null) {
+      final jsonMap = json.decode(result);
+      return MediaInfo.fromJson(jsonMap);
+    }
+    else {
+      return null;
+    }
+  }
+
+  /// Android only
+  Future<bool> isHdrVideo({required String path})
+  async {
+    if (!Platform.isAndroid) return false;
+
+    final result = await _invoke<bool>(MethodName.isHdrVideo, {'path': path});
+
+    if (result != null) {
+      return result;
+    }
+
+    return false;
+  }
+
+  /// Android only
+  Future<bool> isHdrEditingSupported()
+  async {
+    if (!Platform.isAndroid) return false;
+
+    final result = await _invoke<bool>(MethodName.isHdrEditingSupported);
+
+    if (result != null) {
+      return result;
+    }
+
+    return false;
   }
 
   Future<Uint8List?> getByteThumbnail(String path, {
