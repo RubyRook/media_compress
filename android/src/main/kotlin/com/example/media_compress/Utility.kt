@@ -2,18 +2,41 @@ package com.example.media_compress
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.media.MediaCodecInfo
+import android.media.MediaCodecList
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.scale
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaItem.ClippingConfiguration
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.Transformer
 import io.flutter.plugin.common.MethodChannel
-import org.json.JSONObject
+import kotlinx.coroutines.CoroutineScope
 import java.io.File
+import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
-data class VideoSize(val width: Int, val height: Int) {
+data class Dimensions(val width: Int, val height: Int) {
     fun shortestSide (): Int {
         return if (width < height) width else height
     }
@@ -23,8 +46,14 @@ data class VideoSize(val width: Int, val height: Int) {
     }
 }
 
-data class VideoData(val size: VideoSize, val bitrate: Long, val duration: Long)
+data class VideoData(
+    val size: Dimensions,
+    val bitrate: Long,
+    val duration: Long,
+    val frameRate: Float,
+)
 
+@UnstableApi
 class Utility(private val channelName: String) {
 
     fun isLandscapeImage(orientation: Int) = orientation != 90 && orientation != 270
@@ -35,15 +64,138 @@ class Utility(private val channelName: String) {
         }
     }
 
-    fun durationMillis(context: Context, path: String): Long {
-        val file = File(path)
+    suspend fun getMediaInfoISO(context: Context, path: String): String {
+        val json = getMediaInfoJsonISO(context, path)
+        val frameRate = json["frameRate"].toString().toLong()
+        val duration = json["duration"].toString().toFloatOrNull()
+
+        if (frameRate <= 0 || duration == null) {
+            val result = fastTrimISO(context, path, null)
+            if (result != null) return result
+        }
+
+        return json.toString()
+    }
+
+    suspend fun getMediaInfoJsonISO(context: Context, path: String): JSONObject = withContext(Dispatchers.IO) {
         val retriever = MediaMetadataRetriever()
+        var widthStr: String? = null
+        var heightStr: String? = null
+        var orientation: String? = null
+        var bitRatesStr: String? = null
+        var title: String? = null
+        var author: String? = null
+        var duration: String? = null
 
-        retriever.setDataSource(context, Uri.fromFile(file))
-        val durationString = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+        try {
+            // This is the heavy part that freezes the UI
+            retriever.setDataSource(context, Uri.fromFile(File(path)))
+            widthStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+            heightStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+            orientation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+            bitRatesStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
+            title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
+            author = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_AUTHOR)
+            duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+        } catch (e: Exception) {
+            Log.e("VideoUtils", "Error extracting media info", e)
+        } finally {
+            retriever.release()
+        }
 
-        retriever.release()
-        return durationString?.toLongOrNull() ?: 0L
+        val file = File(path)
+        val bitRates = bitRatesStr?.toLongOrNull() ?: 0L
+        var width = widthStr?.toLongOrNull() ?: 0L
+        var height = heightStr?.toLongOrNull() ?: 0L
+        val filesize = file.length()
+        val ori = orientation?.toIntOrNull()
+
+        // Also ensure this sub-call doesn't block (it also uses MediaExtractor)
+        val frameRate = getVideoFrameRate(context, Uri.fromFile(File(path))) ?: 0L
+
+        if (ori != null && isLandscapeImage(ori)) {
+            val tmp = width
+            width = height
+            height = tmp
+        }
+
+        val json = JSONObject()
+        json.put("path", path)
+        json.put("title", title ?: file.name)
+        json.put("author", author ?: "")
+        json.put("width", width)
+        json.put("height", height)
+        json.put("duration", duration?.toFloatOrNull()?.toLong() ?: 0L)
+        json.put("filesize", filesize)
+        json.put("bitRates", bitRates)
+        json.put("frameRate", frameRate.toLong())
+        if (ori != null) {
+            json.put("orientation", ori)
+        }
+
+        return@withContext json // Return the JSONObject to the caller
+    }
+
+    suspend fun fastTrimISO(context: Context, path: String, duration: Int?): String? = suspendCancellableCoroutine { continuation ->
+        val outPath = genOutPath(context, path)
+
+        val clippingConfigBuilder = ClippingConfiguration.Builder().setStartPositionMs(0)
+        if (duration != null && duration > 0) {
+            clippingConfigBuilder.setEndPositionMs(duration * 1000L)
+        }
+
+        val mediaItem = MediaItem.Builder()
+            .setUri(path)
+            .setClippingConfiguration(clippingConfigBuilder.build())
+            .build()
+
+        val editedMediaItem = EditedMediaItem.Builder(mediaItem).build()
+
+        val transformerListener = object : Transformer.Listener {
+            override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                CoroutineScope(Dispatchers.Main).launch {
+                    val json = getMediaInfoJsonISO(context, outPath)
+                    if (continuation.isActive) {
+                        continuation.resume(json.toString())
+                    }
+                }
+            }
+
+            override fun onError(
+                composition: Composition,
+                exportResult: ExportResult,
+                exportException: ExportException
+            ) {
+                if (continuation.isActive) {
+                    if (exportException.errorCodeName == "ERROR_CANCELLED") {
+                        val json = getMediaInfoJson(context, outPath)
+                        continuation.resume(json.toString())
+                    } else {
+                        continuation.resumeWithException(exportException)
+                    }
+                }
+            }
+        }
+
+        val currentTransformer = Transformer.Builder(context)
+            .addListener(transformerListener)
+            .build()
+
+        // Assign to the class-level variable if you need to cancel it externally
+        // transformer = currentTransformer
+
+        // Handle coroutine cancellation (e.g., if the user leaves the screen)
+        continuation.invokeOnCancellation {
+            currentTransformer.cancel()
+        }
+
+        currentTransformer.start(editedMediaItem, outPath)
+    }
+
+    fun genOutPath(context: Context, path: String): String {
+        val tempDir: String = context.getExternalFilesDir(channelName)!!.absolutePath
+        val out = SimpleDateFormat("yyyy-MM-dd hh-mm-ss", Locale.US).format(Date())
+        return "$tempDir/VID_$out${path.hashCode()}.mp4"
     }
 
     fun getVideoData(context: Context, path: String): VideoData {
@@ -64,8 +216,10 @@ class Utility(private val channelName: String) {
         val duration = retriever
             .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
 
+        val frameRate = getVideoFrameRate(context, Uri.fromFile(File(path))) ?: 0F
+
         retriever.release()
-        return VideoData(VideoSize(width, height), bitrate, duration)
+        return VideoData(Dimensions(width, height), bitrate, duration, frameRate)
     }
 
     fun getVideoFrameRate(context: Context, videoUri: Uri): Float? {
@@ -186,7 +340,8 @@ class Utility(private val channelName: String) {
         if (bitmap == null) {
             result.success(null) // Let Flutter know there is no bitmap
             // Return a dummy bitmap to prevent a crash if the caller isn't null-safe
-            return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+            // return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+            return createBitmap(1, 1)
         }
 
         val width = bitmap.width
@@ -196,7 +351,8 @@ class Utility(private val channelName: String) {
             val scale = 512f / max
             val w = (scale * width).roundToInt()
             val h = (scale * height).roundToInt()
-            bitmap = Bitmap.createScaledBitmap(bitmap, w, h, true)
+            // bitmap = Bitmap.createScaledBitmap(bitmap, w, h, true)
+            bitmap = bitmap.scale(w, h)
         }
 
         return bitmap
@@ -205,5 +361,60 @@ class Utility(private val channelName: String) {
     fun deleteAllCache(context: Context, result: MethodChannel.Result) {
         val dir = context.getExternalFilesDir("media_compress")
         result.success(dir?.deleteRecursively())
+    }
+
+    fun isCbrSupported(mimeType: String = MediaFormat.MIMETYPE_VIDEO_AVC): Boolean {
+        val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        for (codecInfo in codecList.codecInfos) {
+            if (!codecInfo.isEncoder) continue
+            if (codecInfo.supportedTypes.contains(mimeType)) {
+                val capabilities = codecInfo.getCapabilitiesForType(mimeType)
+                /*val cbrSupported = capabilities.encoderCapabilities.bitrateModes
+                    .contains(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)*/
+                val cbrSupported = capabilities.encoderCapabilities?.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+                return cbrSupported == true
+            }
+        }
+        return false
+    }
+
+    fun isVideoIsHdr(path: String): Boolean {
+        var isHdr = false
+        val extractor = MediaExtractor()
+
+        try {
+            extractor.setDataSource(path)
+
+            for (i in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(i)
+                // Look for a video track
+                if (format.getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true) {
+                    // Check for the color transfer function
+                    if (format.containsKey(MediaFormat.KEY_COLOR_TRANSFER)) {
+                        val colorTransfer = format.getInteger(MediaFormat.KEY_COLOR_TRANSFER)
+                        if (colorTransfer == MediaFormat.COLOR_TRANSFER_HLG || colorTransfer == 6) {
+                            isHdr = true
+                            break // Found a video track that is HDR
+                        }
+                    }
+
+                    // In practice, a common way to infer HDR from MediaFormat:
+                    val colorStandard = format.getInteger(MediaFormat.KEY_COLOR_STANDARD)
+                    val colorTransferFunction = format.getInteger(MediaFormat.KEY_COLOR_TRANSFER)
+
+                    // Check for common HDR related keys. If the video is HDR, it will likely use
+                    // BT.2020 primaries and PQ or HLG transfer functions.
+                    if (colorStandard == MediaFormat.COLOR_STANDARD_BT2020 && colorTransferFunction == MediaFormat.COLOR_TRANSFER_HLG) {
+                        isHdr = true
+                        break
+                    }
+                }
+            }
+        } catch (e: IOException) {
+            Log.e("VideoUtils", "Error reading video metadata", e)
+        } finally {
+            extractor.release()
+        }
+        return isHdr
     }
 }
