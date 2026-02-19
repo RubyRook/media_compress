@@ -101,10 +101,8 @@ public class MediaCompressPlugin: NSObject, FlutterPlugin {
       case 0:
         resolution = CGSize(width: 640, height: 480)
       case 1:
-        resolution = CGSize(width: 960, height: 540)
-      case 2:
         resolution = CGSize(width: 1280, height: 720)
-      case 3:
+      case 2:
         resolution = CGSize(width: 1920, height: 1080)
       default:
         resolution = CGSize(width: 640, height: 480)
@@ -156,18 +154,18 @@ public class MediaCompressPlugin: NSObject, FlutterPlugin {
     }
 
     // 4. Configure Video Writer Input
+    var minBitrate = 1_000_000
     var estimatedDataRate = Int(sourceVideoTrack.estimatedDataRate)
-    if estimatedDataRate == 0 { estimatedDataRate = 1_000_000 }
+    if estimatedDataRate == 0 { estimatedDataRate = minBitrate }
 
     let outputSize = getOutputSize(from: sourceVideoTrack.naturalSize, for: quality)
     let bitrate: Int
 
     switch quality.intValue {
-      case 0: bitrate = 1_000_000 // 1 Mbps
+      case 0: bitrate = minBitrate
       case 1: bitrate = estimatedDataRate < 1_800_000 ? estimatedDataRate: 1_800_000 // 1.8 Mbps
-      case 2: bitrate = estimatedDataRate < 2_500_000 ? estimatedDataRate: 2_500_000 // 2.5 Mbps
-      case 3: bitrate = estimatedDataRate < 5_000_000 ? estimatedDataRate: 5_000_000 // 5 Mbps
-      default: bitrate = 1_000_000
+      case 2: bitrate = estimatedDataRate < 2_400_000 ? estimatedDataRate: 2_400_000 // 2.4 Mbps
+      default: bitrate = minBitrate
     }
 
     let videoOutputSettings: [String: Any] = [
@@ -191,7 +189,7 @@ public class MediaCompressPlugin: NSObject, FlutterPlugin {
         AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
         AVSampleRateKey: 44100,
         AVNumberOfChannelsKey: 2,
-        AVEncoderBitRateKey: 128000,
+        AVEncoderBitRateKey: 64000,
       ]
       let writerAudioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
       writerAudioInput.expectsMediaDataInRealTime = false
