@@ -369,8 +369,6 @@ class Utility(private val channelName: String) {
             if (!codecInfo.isEncoder) continue
             if (codecInfo.supportedTypes.contains(mimeType)) {
                 val capabilities = codecInfo.getCapabilitiesForType(mimeType)
-                /*val cbrSupported = capabilities.encoderCapabilities.bitrateModes
-                    .contains(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)*/
                 val cbrSupported = capabilities.encoderCapabilities?.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
                 return cbrSupported == true
             }
@@ -387,24 +385,22 @@ class Utility(private val channelName: String) {
 
             for (i in 0 until extractor.trackCount) {
                 val format = extractor.getTrackFormat(i)
-                // Look for a video track
                 if (format.getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true) {
-                    // Check for the color transfer function
                     if (format.containsKey(MediaFormat.KEY_COLOR_TRANSFER)) {
                         val colorTransfer = format.getInteger(MediaFormat.KEY_COLOR_TRANSFER)
                         if (colorTransfer == MediaFormat.COLOR_TRANSFER_HLG || colorTransfer == 6) {
                             isHdr = true
-                            break // Found a video track that is HDR
+                            break
                         }
                     }
 
-                    // In practice, a common way to infer HDR from MediaFormat:
-                    val colorStandard = format.getInteger(MediaFormat.KEY_COLOR_STANDARD)
-                    val colorTransferFunction = format.getInteger(MediaFormat.KEY_COLOR_TRANSFER)
-
-                    // Check for common HDR related keys. If the video is HDR, it will likely use
-                    // BT.2020 primaries and PQ or HLG transfer functions.
-                    if (colorStandard == MediaFormat.COLOR_STANDARD_BT2020 && colorTransferFunction == MediaFormat.COLOR_TRANSFER_HLG) {
+                    val colorStandard = try {
+                        format.getInteger(MediaFormat.KEY_COLOR_STANDARD)
+                    }
+                    catch (_: Exception) {
+                        0
+                    }
+                    if (colorStandard == MediaFormat.COLOR_STANDARD_BT2020) {
                         isHdr = true
                         break
                     }
