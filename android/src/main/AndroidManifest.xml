@@ -3,4 +3,22 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+
+    <application
+        android:allowCrossUidActivitySwitchFromBelow="false"
+        android:hardwareAccelerated="true"
+        android:usesCleartextTraffic="true"
+        android:requestLegacyExternalStorage="true"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:largeHeap="true">
+
+        <activity
+            android:name=".player.PlayerActivity"
+            android:screenOrientation="fullSensor"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.AppCompat.NoActionBar"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"/>
+    </application>
 </manifest>
