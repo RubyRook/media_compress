@@ -1,6 +1,8 @@
 package com.example.media_compress
 
+import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.os.Build
@@ -26,6 +28,7 @@ import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
 import androidx.media3.transformer.VideoEncoderSettings
+import com.example.media_compress.player.PlayerActivity
 import com.google.common.collect.ImmutableList
 import com.otaliastudios.transcoder.Transcoder
 import com.otaliastudios.transcoder.TranscoderListener
@@ -34,6 +37,8 @@ import com.otaliastudios.transcoder.source.UriDataSource
 import com.otaliastudios.transcoder.strategy.DefaultAudioStrategy
 import com.otaliastudios.transcoder.strategy.DefaultVideoStrategy
 import io.flutter.embedding.engine.plugins.FlutterPlugin
+import io.flutter.embedding.engine.plugins.activity.ActivityAware
+import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
@@ -46,10 +51,11 @@ const val channelName = "media_compress"
 
 /** MediaCompressPlugin */
 @UnstableApi
-class MediaCompressPlugin : FlutterPlugin, MethodCallHandler {
+class MediaCompressPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     val tag = "MediaCompressPlugin"
     val utility = Utility(channelName)
 
+    private var _activity: Activity? = null
     private var _context: Context? = null
     private lateinit var _channel: MethodChannel
     private var transformer: Transformer? = null
@@ -69,6 +75,23 @@ class MediaCompressPlugin : FlutterPlugin, MethodCallHandler {
         }
 
         when (call.method) {
+            "play" -> {
+                val activity = _activity
+                val url = call.argument<String>("url")
+
+                if (activity != null) {
+                    val intent = Intent(activity, PlayerActivity::class.java)
+                    intent.putExtra("url", url)
+                    activity.startActivity(intent)
+                }
+                else {
+                    val intent = Intent(context, PlayerActivity::class.java)
+                    intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    intent.putExtra("url", url)
+                    context.startActivity(intent)
+                }
+                result.success(null)
+            }
             "isHdrVideo" -> {
                 val path = call.argument<String>("path")
                 val response = utility.isVideoIsHdr(path!!)
@@ -123,6 +146,22 @@ class MediaCompressPlugin : FlutterPlugin, MethodCallHandler {
         }
     }
 
+    override fun onAttachedToActivity(binding: ActivityPluginBinding) {
+        _activity = binding.activity
+    }
+
+    override fun onDetachedFromActivity() {
+        _activity = null
+    }
+
+    override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
+        _activity = binding.activity
+    }
+
+    override fun onDetachedFromActivityForConfigChanges() {
+        _activity = null
+    }
+
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         val channel = MethodChannel(binding.binaryMessenger, channelName)
         channel.setMethodCallHandler(this)
@@ -159,7 +198,6 @@ class MediaCompressPlugin : FlutterPlugin, MethodCallHandler {
         else {
             media3Compress(context, path, quality, duration, frameRate, false, result)
         }
-        // fastTrims(context, path, duration, result)
     }
 
     private fun transcoderCompress(context: Context, path: String, quality: Int, duration: Int?, frameRate: Int, result: MethodChannel.Result) {
@@ -179,8 +217,8 @@ class MediaCompressPlugin : FlutterPlugin, MethodCallHandler {
                         .bitRate(1_000_000)
                 }
                 1 -> {
-                    bitrate = if (bitrate < 1_500_000) bitrate else 1_500_000 // 1.5 Mbps
-                    bitrate = (bitrate * .75).toLong()
+                    bitrate = if (bitrate < 1_800_000) bitrate else 1_800_000 // 1.8 Mbps
+                    // bitrate = (bitrate * .75).toLong()
                     videoTrackStrategy = DefaultVideoStrategy.atMost(720)
                         .bitRate(bitrate)
                 }
@@ -259,11 +297,11 @@ class MediaCompressPlugin : FlutterPlugin, MethodCallHandler {
                     videoSize = 480
                 }
                 1 -> { // High
-                    bitrate = if (bitrate < 1_800_000) bitrate else 1_800_000 // 1.8 Mbps
+                    bitrate = 2_000_000
                     videoSize = 720
                 }
                 2 -> { // Very High
-                    bitrate = if (bitrate < 2_400_000) bitrate else 2_400_000 // 2.0 Mbps
+                    bitrate = 2_400_000
                     videoSize = 1080
                 }
             }
