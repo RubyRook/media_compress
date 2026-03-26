@@ -54,6 +54,7 @@ enum MethodName {
   fastTrims,
   isHdrVideo,
   isHdrEditingSupported,
+  media3Compress,
 }
 
 mixin _CompressMixin {
@@ -109,6 +110,35 @@ class MediaCompress with _CompressMixin {
 
     setProcessingStatus(true);
     final result = await _invoke<String>(MethodName.compress, {
+      'path': path,
+      'quality': quality.index,
+      'duration': duration,
+      'frameRate': frameRate,
+    }).whenComplete(()=> setProcessingStatus(false));
+
+    if (result != null) {
+      final jsonMap = json.decode(result);
+      return MediaInfo.fromJson(jsonMap);
+    }
+    else {
+      return null;
+    }
+  }
+
+  /// Android only
+  Future<MediaInfo?> media3Compress({
+    required String path,
+    required Quality quality,
+    int? duration,
+    int frameRate = 30,
+  })
+  async {
+    if (isCompressing) {
+      throw StateError('Already have a compression process!');
+    }
+
+    setProcessingStatus(true);
+    final result = await _invoke<String>(MethodName.media3Compress, {
       'path': path,
       'quality': quality.index,
       'duration': duration,
@@ -193,6 +223,17 @@ class MediaCompress with _CompressMixin {
     });
   }
 
+  bool isPlaying = false;
+  /// Android only
+  Future<void> play(String url) async {
+    if (!isPlaying) {
+      isPlaying = true;
+      await _channel.invokeMethod('play', {'url': url});
+      await Future.delayed(const Duration(seconds: 2));
+      isPlaying = false;
+    }
+  }
+
   Future<MediaInfo> getMediaInfo(String path) async {
     // Not to set the result as strong-mode so that it would have exception to
     // lead to the failure of compression
@@ -212,6 +253,9 @@ class MediaCompress with _CompressMixin {
           ? await channel.invokeMethod(name.name, params)
           : await channel.invokeMethod(name.name);
 
+      if (name == MethodName.cancelCompression) {
+        setProcessingStatus(false);
+      }
     } on PlatformException catch (e) {
       if (name == MethodName.compress) {
         rethrow;
