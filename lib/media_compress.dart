@@ -54,7 +54,6 @@ enum MethodName {
   fastTrims,
   isHdrVideo,
   isHdrEditingSupported,
-  media3Compress,
 }
 
 mixin _CompressMixin {
@@ -110,35 +109,6 @@ class MediaCompress with _CompressMixin {
 
     setProcessingStatus(true);
     final result = await _invoke<String>(MethodName.compress, {
-      'path': path,
-      'quality': quality.index,
-      'duration': duration,
-      'frameRate': frameRate,
-    }).whenComplete(()=> setProcessingStatus(false));
-
-    if (result != null) {
-      final jsonMap = json.decode(result);
-      return MediaInfo.fromJson(jsonMap);
-    }
-    else {
-      return null;
-    }
-  }
-
-  /// Android only
-  Future<MediaInfo?> media3Compress({
-    required String path,
-    required Quality quality,
-    int? duration,
-    int frameRate = 30,
-  })
-  async {
-    if (isCompressing) {
-      throw StateError('Already have a compression process!');
-    }
-
-    setProcessingStatus(true);
-    final result = await _invoke<String>(MethodName.media3Compress, {
       'path': path,
       'quality': quality.index,
       'duration': duration,
