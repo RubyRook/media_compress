@@ -46,6 +46,14 @@ android {
 
     defaultConfig {
         minSdk = 24
+        consumerProguardFiles "proguard-rules.pro"
+    }
+
+    buildTypes {
+        release {
+            // This ensures the rules are applied when the app is built in release mode
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
     }
 
     dependencies {
